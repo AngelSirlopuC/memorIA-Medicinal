@@ -120,6 +120,17 @@ async def post_feedback(
 # --- Imágenes -----------------------------------------------------------------
 
 
+@router.get("/query/{query_id}/collage")
+async def get_query_collage(
+    query_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+):
+    """Devuelve el collage (JPEG) de las coincidencias de una consulta."""
+    data = await pipeline.build_query_collage(session, query_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Consulta sin coincidencias.")
+    return Response(content=data, media_type="image/jpeg")
+
+
 @router.get("/images/{name}")
 async def get_image(name: str):
     """Sirve una imagen almacenada (por nombre de archivo) para el frontend."""

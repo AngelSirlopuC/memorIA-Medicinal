@@ -439,10 +439,12 @@ que permita hacer el mismo trabajo (preguntar, capturar o enviar fotos) desde el
 - descarga de imágenes (media con token)
 - botones/listas interactivas, registro, consulta y feedback
 
-## Sprint 8 - Collage Inteligente
+## Sprint 8 - Collage Inteligente ✅
 
-- generación de collage
-- selección asistida por usuario
+- generación de collage (Pillow): grilla numerada con la mejor coincidencia resaltada
+- incluido en Telegram (foto + botones) y WhatsApp (lista con header de imagen)
+- endpoint `GET /query/{id}/collage`
+- selección asistida por usuario (feedback)
 
 ## Sprint 9 - Historial Familiar
 

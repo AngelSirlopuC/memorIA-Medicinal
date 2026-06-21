@@ -24,6 +24,7 @@ from app.db.models import (
     RecordImage,
 )
 from app.schemas import QueryCandidate, QueryResponse, RegisterResponse
+from app.services import collage as collage_svc
 from app.storage import get_storage
 
 _EXT_BY_MIME = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp"}
@@ -239,6 +240,61 @@ async def query_medicine(
         confidence=rerank.confidence,
         candidates=candidates,
     )
+
+
+# --- Collage ------------------------------------------------------------------
+
+
+async def build_query_collage(session: AsyncSession, query_id: uuid.UUID) -> bytes | None:
+    """Reconstruye el collage de una consulta guardada (para el endpoint web)."""
+    storage = get_storage()
+    q = await session.get(Query, query_id)
+    if q is None:
+        return None
+
+    query_bytes = None
+    if q.query_image_url:
+        try:
+            query_bytes = storage.load(q.query_image_url)
+        except Exception:  # noqa: BLE001
+            query_bytes = None
+
+    rows = (
+        await session.execute(
+            select(
+                QueryResult.record_id,
+                QueryResult.vision_confidence,
+                QueryResult.vector_score,
+                RecordImage.storage_url,
+            )
+            .join(RecordImage, RecordImage.record_id == QueryResult.record_id)
+            .where(QueryResult.query_id == query_id)
+            .order_by(QueryResult.rank)
+        )
+    ).all()
+    if not rows:
+        return None
+
+    # Una imagen por record (la primera), preservando el orden por rank
+    seen: set = set()
+    cands: list = []
+    for record_id, vconf, vscore, storage_url in rows:
+        if record_id in seen:
+            continue
+        seen.add(record_id)
+        cands.append(
+            type(
+                "C",
+                (),
+                {
+                    "record_id": record_id,
+                    "vision_confidence": vconf,
+                    "vector_score": vscore,
+                    "image_url": storage_url,
+                },
+            )()
+        )
+    return collage_svc.collage_for_candidates(storage, query_bytes, cands)
 
 
 # --- Feedback -----------------------------------------------------------------

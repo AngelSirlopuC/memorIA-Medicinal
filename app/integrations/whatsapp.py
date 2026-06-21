@@ -19,7 +19,8 @@ import httpx
 from app.ai.client import AINotConfiguredError
 from app.config import get_settings
 from app.db.session import SessionLocal
-from app.services import pipeline, profiles
+from app.services import collage, pipeline, profiles
+from app.storage import get_storage
 
 log = logging.getLogger("whatsapp")
 
@@ -47,6 +48,7 @@ class WhatsAppClient:
         self.token = token
         self.base = f"https://graph.facebook.com/{version}"
         self.messages_url = f"{self.base}/{phone_id}/messages"
+        self.media_url = f"{self.base}/{phone_id}/media"
 
     @property
     def _headers(self) -> dict:
@@ -78,27 +80,42 @@ class WhatsAppClient:
             },
         })
 
-    async def send_list(self, to: str, body: str, button: str, rows: list[tuple[str, str]]) -> dict:
-        """rows: lista de (id, título). Hasta 10 filas."""
-        return await self._send({
-            "to": to,
-            "type": "interactive",
-            "interactive": {
-                "type": "list",
-                "body": {"text": body},
-                "action": {
-                    "button": button[:20],
-                    "sections": [
-                        {
-                            "title": "Opciones",
-                            "rows": [
-                                {"id": rid, "title": title[:24]} for rid, title in rows[:10]
-                            ],
-                        }
-                    ],
-                },
+    async def send_list(
+        self,
+        to: str,
+        body: str,
+        button: str,
+        rows: list[tuple[str, str]],
+        header_image_id: str | None = None,
+    ) -> dict:
+        """rows: lista de (id, título). Hasta 10 filas. Header de imagen opcional."""
+        interactive: dict = {
+            "type": "list",
+            "body": {"text": body},
+            "action": {
+                "button": button[:20],
+                "sections": [
+                    {
+                        "title": "Opciones",
+                        "rows": [{"id": rid, "title": title[:24]} for rid, title in rows[:10]],
+                    }
+                ],
             },
-        })
+        }
+        if header_image_id:
+            interactive["header"] = {"type": "image", "image": {"id": header_image_id}}
+        return await self._send({"to": to, "type": "interactive", "interactive": interactive})
+
+    async def upload_media(self, image: bytes, mime: str = "image/jpeg") -> str:
+        """Sube una imagen y devuelve su media_id (para usarla como header)."""
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.post(
+                self.media_url,
+                headers=self._headers,
+                data={"messaging_product": "whatsapp", "type": mime},
+                files={"file": ("collage.jpg", image, mime)},
+            )
+            return r.json()["id"]
 
     async def download_media(self, media_id: str) -> bytes:
         async with httpx.AsyncClient(timeout=60) as c:
@@ -179,12 +196,21 @@ async def _do_query(wa: WhatsAppClient, to: str, media_id: str, question: str | 
         lines.append(f"*{i}.* {name} — registrado {date}" + (f" · {conf}" if conf else ""))
     lines.append("")
     lines.append("_Posible coincidencia. Verifica el vencimiento y consulta con un profesional._")
-    await wa.send_text(to, "\n".join(lines))
+    body = "\n".join(lines)
 
     _pending_query[to] = {"query_id": r.query_id, "records": [c.record_id for c in r.candidates]}
     rows = [(f"fb:{i}", f"Opción {i + 1}") for i in range(len(r.candidates))]
     rows.append(("fb:none", "Ninguna"))
-    await wa.send_list(to, "¿Cuál es la correcta?", "Responder", rows)
+
+    # Collage: una imagen con las opciones numeradas como header de la lista
+    header_id = None
+    if len(r.candidates) > 1:
+        try:
+            img = collage.collage_for_candidates(get_storage(), image, r.candidates)
+            header_id = await wa.upload_media(img)
+        except Exception:  # noqa: BLE001 — si falla, enviamos la lista sin header
+            header_id = None
+    await wa.send_list(to, body, "Responder", rows, header_image_id=header_id)
     _pending_photo.pop(to, None)
 
 

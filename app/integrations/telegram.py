@@ -19,7 +19,8 @@ import httpx
 from app.ai.client import AINotConfiguredError
 from app.config import get_settings
 from app.db.session import SessionLocal
-from app.services import pipeline, profiles
+from app.services import collage, pipeline, profiles
+from app.storage import get_storage
 
 log = logging.getLogger("telegram")
 
@@ -194,12 +195,25 @@ async def _do_query(tg: TelegramClient, chat_id: int, file_id: str, question: st
         lines.append(f"*{i}.* {name} — registrado {date}" + (f" · {conf}" if conf else ""))
     lines.append("")
     lines.append("_Posible coincidencia. Verifica el vencimiento y consulta con un profesional._")
+    caption = "\n".join(lines)
 
     _pending_query[chat_id] = {
         "query_id": r.query_id,
         "records": [c.record_id for c in r.candidates],
     }
-    await tg.send_message(chat_id, "\n".join(lines), _feedback_keyboard(len(r.candidates)))
+    keyboard = _feedback_keyboard(len(r.candidates))
+
+    # Collage: una sola imagen con las opciones numeradas + la foto de consulta
+    sent = False
+    if len(r.candidates) > 1:
+        try:
+            img = collage.collage_for_candidates(get_storage(), image, r.candidates)
+            await tg.send_photo(chat_id, img, caption, keyboard)
+            sent = True
+        except Exception:  # noqa: BLE001 — si falla el collage, caemos a texto
+            sent = False
+    if not sent:
+        await tg.send_message(chat_id, caption, keyboard)
     _pending_photo.pop(chat_id, None)
 
 

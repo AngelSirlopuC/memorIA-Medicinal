@@ -100,7 +100,7 @@ curl -X POST http://localhost:8000/query/<query_id>/feedback \
 - [x] Sprint 5 — Similitud (Top-K) *(pgvector)*
 - [x] Sprint 6 — Comparación visual / desempate *(re-rank de Vision)*
 - [x] **Sprint 7 — WhatsApp**: Cloud API (webhook + verificación, botones/listas, registro, consulta y feedback).
-- [ ] Sprint 8 — Collage inteligente
+- [x] **Sprint 8 — Collage inteligente**: imagen única con opciones numeradas (Telegram, WhatsApp, endpoint).
 - [ ] Sprint 9 — Historial familiar
 
 ## Telegram (Sprint 2)

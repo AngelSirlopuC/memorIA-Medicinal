@@ -101,7 +101,22 @@ curl -X POST http://localhost:8000/query/<query_id>/feedback \
 - [x] Sprint 6 — Comparación visual / desempate *(re-rank de Vision)*
 - [x] **Sprint 7 — WhatsApp**: Cloud API (webhook + verificación, botones/listas, registro, consulta y feedback).
 - [x] **Sprint 8 — Collage inteligente**: imagen única con opciones numeradas (Telegram, WhatsApp, endpoint).
-- [ ] Sprint 9 — Historial familiar
+- [x] **Sprint 9 — Historial familiar**: perfiles (web + canales) e historial por persona.
+- [x] **Sprint 10 — Agente conversacional + recetas**: LangGraph + recetas agrupadas, en web, Telegram y WhatsApp (`POST /agent/message`).
+- [ ] Sprint 11 — Speech-to-text (web + Telegram + WhatsApp)
+
+## Agente conversacional (Sprint 10)
+
+En vez de botones, hablas con naturalidad y el agente (un grafo de estados con
+**LangGraph** + tool-calling de OpenAI) interpreta la intención y agrupa medicinas en
+**recetas**. Ejemplo:
+
+> — Hoy Thiago tuvo cita y le recetaron esto _(adjuntas la foto de la receta)_
+> — 📋 Abrí la receta de Thiago. Mándame una foto de cada medicina…
+> — _(envías foto de un blíster)_ → ✅ Agregué Amoxicilina 500mg. Van 1. ¿Otra o digo listo?
+> — listo → 📋 Cerré la receta con N medicinas.
+
+Disponible en la web (`/chat`), Telegram y WhatsApp. La web usa `POST /agent/message`.
 
 ## Telegram (Sprint 2)
 

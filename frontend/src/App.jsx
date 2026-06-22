@@ -1,4 +1,5 @@
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import ProfileSelector from "./components/ProfileSelector.jsx";
 
 function Logo() {
   return (
@@ -33,7 +34,18 @@ export default function App() {
           MemorIA Medicinal
         </Link>
         <nav className="nav">
-          {pathname !== "/chat" ? (
+          {pathname !== "/" && <ProfileSelector />}
+          {pathname === "/chat" && (
+            <NavLink to="/historial" className="btn btn-ghost">
+              Historial
+            </NavLink>
+          )}
+          {pathname === "/historial" && (
+            <NavLink to="/chat" className="btn btn-ghost">
+              Chat
+            </NavLink>
+          )}
+          {pathname !== "/chat" && pathname !== "/historial" ? (
             <NavLink to="/chat" className="btn btn-primary">
               Abrir asistente
             </NavLink>

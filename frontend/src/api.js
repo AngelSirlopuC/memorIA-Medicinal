@@ -40,6 +40,18 @@ export async function queryMedicine(file, question, { profileId } = {}) {
   return res.json();
 }
 
+export async function sendAgentMessage(conversationId, text, file, { profileId } = {}) {
+  const fd = new FormData();
+  fd.append("conversation_id", conversationId);
+  if (text) fd.append("text", text);
+  if (profileId) fd.append("profile_id", profileId);
+  if (file) fd.append("image", file);
+  const res = await handle(
+    await fetch(`${API_BASE}/agent/message`, { method: "POST", body: fd })
+  );
+  return res.json();
+}
+
 export async function sendFeedback(queryId, selectedRecordId) {
   await handle(
     await fetch(`${API_BASE}/query/${queryId}/feedback`, {
@@ -48,6 +60,27 @@ export async function sendFeedback(queryId, selectedRecordId) {
       body: JSON.stringify({ selected_record_id: selectedRecordId }),
     })
   );
+}
+
+export async function listProfiles() {
+  const res = await handle(await fetch(`${API_BASE}/profiles`));
+  return res.json();
+}
+
+export async function createProfile(displayName, relation) {
+  const res = await handle(
+    await fetch(`${API_BASE}/profiles`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: displayName, relation: relation || null }),
+    })
+  );
+  return res.json();
+}
+
+export async function getHistory(profileId) {
+  const res = await handle(await fetch(`${API_BASE}/profiles/${profileId}/records`));
+  return res.json();
 }
 
 export async function health() {

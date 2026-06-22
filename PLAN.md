@@ -446,10 +446,27 @@ que permita hacer el mismo trabajo (preguntar, capturar o enviar fotos) desde el
 - endpoint `GET /query/{id}/collage`
 - selección asistida por usuario (feedback)
 
-## Sprint 9 - Historial Familiar
+## Sprint 10 - Agente Conversacional + Recetas ✅
 
-- perfiles
-- múltiples personas
+- entidad **receta/cita** (`prescriptions`) que agrupa varias medicinas
+- agente **LangGraph** (grafo de estados) con tool-calling de OpenAI: abrir receta,
+  agregar medicina, consultar, cambiar de perfil, cerrar
+- estado de conversación por canal/usuario (perfil activo + receta abierta)
+- flujo natural: "Hoy Thiago tuvo cita, le recetaron esto" → abre receta → se suman fotos
+- integrado en web (chat conversacional), Telegram y WhatsApp
+- endpoint `POST /agent/message`
+
+## Sprint 11 - Speech-to-Text (planeado)
+
+- transcripción con OpenAI (Whisper / gpt-4o-transcribe)
+- web: micrófono del navegador → `POST /transcribe` → agente
+- Telegram/WhatsApp: notas de voz → descarga → transcripción → agente
+
+## Sprint 9 - Historial Familiar ✅
+
+- perfiles (crear/cambiar) en web, Telegram y WhatsApp
+- registro/consulta atados al perfil activo
+- historial por persona (`GET /profiles/{id}/records` + página Historial en la web)
 
 ---
 

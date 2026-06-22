@@ -108,6 +108,23 @@ class Medicine(Base):
     )
 
 
+class Prescription(Base):
+    __tablename__ = "prescriptions"
+
+    id: Mapped[uuid.UUID] = _pk()
+    profile_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    doctor: Mapped[str | None] = mapped_column(Text)
+    prescribed_at: Mapped[date | None] = mapped_column(Date)
+    notes: Mapped[str | None] = mapped_column(Text)
+    image_url: Mapped[str | None] = mapped_column(Text)
+    closed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class Record(Base):
     __tablename__ = "records"
     __table_args__ = (
@@ -120,6 +137,9 @@ class Record(Base):
     id: Mapped[uuid.UUID] = _pk()
     profile_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    prescription_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("prescriptions.id", ondelete="SET NULL")
     )
     medicine_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("medicines.id", ondelete="SET NULL")

@@ -18,8 +18,9 @@ import httpx
 
 from app.ai.client import AINotConfiguredError
 from app.config import get_settings
+from app import agent
 from app.db.session import SessionLocal
-from app.services import collage, pipeline, profiles
+from app.services import collage, pipeline, profiles  # noqa: F401 (pipeline usado por el agente)
 from app.storage import get_storage
 
 log = logging.getLogger("whatsapp")
@@ -29,14 +30,17 @@ _SOURCE_LABELS = {"receta": "Receta", "caja": "Caja", "blister": "Blíster", "pa
 
 _pending_photo: dict[str, str] = {}   # wa_id -> media_id de la última foto
 _pending_query: dict[str, dict] = {}  # wa_id -> {"query_id":.., "records":[..]}
+_active_profile: dict[str, str] = {}  # wa_id -> profile_id activo
+_awaiting_name: set[str] = set()      # chats creando un perfil
 
 WELCOME = (
     "👋 *MemorIA Medicinal*\n\n"
-    "Tu memoria de medicamentos. Envíame una *foto* de una receta, caja, blíster o "
-    "pastilla y elige si quieres *registrarla* o *consultar* a cuál de tus medicamentos "
-    "se parece.\n\n"
+    "Tu memoria de medicamentos. Háblame con naturalidad y envíame *fotos*. Por ejemplo: "
+    "_\"Hoy Thiago tuvo cita y le recetaron esto\"_ (adjunta la receta) y luego una foto de "
+    "cada medicina; o _\"¿cuándo compré esta pastilla?\"_ con una foto.\n\n"
     "_No identifico medicamentos ni indico si se pueden tomar. Verifica el vencimiento y "
-    "consulta con un profesional de salud._"
+    "consulta con un profesional de salud._\n\n"
+    "Escribe *perfiles* para registrar a varios miembros de la familia."
 )
 
 
@@ -148,70 +152,33 @@ def _conf_label(c: float | None) -> str:
     return "confianza baja"
 
 
-async def _resolve_profile_id(session) -> str:
-    prof = await profiles.get_or_create_default_profile(session)
-    await session.commit()
-    return prof.id
-
-
-async def _do_register(wa: WhatsAppClient, to: str, media_id: str, source: str) -> None:
-    image = await wa.download_media(media_id)
+async def _send_profiles(wa: WhatsAppClient, to: str) -> None:
     async with SessionLocal() as session:
-        pid = await _resolve_profile_id(session)
-        try:
-            r = await pipeline.register_record(session, pid, image, source, "image/jpeg")
-        except AINotConfiguredError:
-            await wa.send_text(to, "⚠️ La IA no está configurada (falta OPENAI_API_KEY).")
-            return
-    if r.deduplicated:
-        await wa.send_text(to, "Esta foto ya estaba registrada en tu memoria. ✓")
-    else:
-        name = (f"*{r.name}*" + (f" {r.dose}" if r.dose else "")) if r.name else "el medicamento"
-        await wa.send_text(to, f"✅ Registré {name} como _{_SOURCE_LABELS.get(source, source)}_.")
-    _pending_photo.pop(to, None)
+        profs = await profiles.list_profiles(session)
+    active_id = agent.get_conversation_profile(f"wa:{to}")[0]
+    rows = [(f"prof:{p.id}", p.display_name) for p in profs]
+    rows.append(("prof:new", "➕ Nuevo perfil"))
+    active = next((p.display_name for p in profs if str(p.id) == str(active_id)), "por defecto")
+    await wa.send_list(to, f"👪 Perfil activo: *{active}*. Elige o crea otro:", "Perfiles", rows)
 
 
-async def _do_query(wa: WhatsAppClient, to: str, media_id: str, question: str | None) -> None:
-    image = await wa.download_media(media_id)
-    async with SessionLocal() as session:
-        pid = await _resolve_profile_id(session)
-        try:
-            r = await pipeline.query_medicine(session, pid, image, question, "image/jpeg")
-        except AINotConfiguredError:
-            await wa.send_text(to, "⚠️ La IA no está configurada (falta OPENAI_API_KEY).")
-            return
-
-    if not r.candidates:
-        await wa.send_text(
-            to, "No encontré coincidencias en tu historial todavía. Regístralo para reconocerlo después."
-        )
-        _pending_photo.pop(to, None)
-        return
-
-    lines = ["🔎 *Posibles coincidencias:*", ""]
-    for i, c in enumerate(r.candidates, start=1):
-        name = c.name or f"Registro #{c.rank}"
-        date = c.registered_at.strftime("%d/%m/%Y") if c.registered_at else "fecha desconocida"
-        conf = _conf_label(c.vision_confidence if c.vision_confidence is not None else c.vector_score)
-        lines.append(f"*{i}.* {name} — registrado {date}" + (f" · {conf}" if conf else ""))
-    lines.append("")
-    lines.append("_Posible coincidencia. Verifica el vencimiento y consulta con un profesional._")
-    body = "\n".join(lines)
-
-    _pending_query[to] = {"query_id": r.query_id, "records": [c.record_id for c in r.candidates]}
-    rows = [(f"fb:{i}", f"Opción {i + 1}") for i in range(len(r.candidates))]
-    rows.append(("fb:none", "Ninguna"))
-
-    # Collage: una imagen con las opciones numeradas como header de la lista
-    header_id = None
-    if len(r.candidates) > 1:
-        try:
-            img = collage.collage_for_candidates(get_storage(), image, r.candidates)
-            header_id = await wa.upload_media(img)
-        except Exception:  # noqa: BLE001 — si falla, enviamos la lista sin header
-            header_id = None
-    await wa.send_list(to, body, "Responder", rows, header_image_id=header_id)
-    _pending_photo.pop(to, None)
+async def _send_agent_reply(wa: WhatsAppClient, to: str, reply, query_image: bytes | None = None) -> None:
+    """Envía las respuestas del agente; si hubo consulta, manda lista con collage + feedback."""
+    for t in reply.texts:
+        await wa.send_text(to, t)
+    q = reply.query
+    if q and q.candidates:
+        _pending_query[to] = {"query_id": q.query_id, "records": [c.record_id for c in q.candidates]}
+        rows = [(f"fb:{i}", f"Opción {i + 1}") for i in range(len(q.candidates))]
+        rows.append(("fb:none", "Ninguna"))
+        header_id = None
+        if len(q.candidates) > 1 and query_image:
+            try:
+                img = collage.collage_for_candidates(get_storage(), query_image, q.candidates)
+                header_id = await wa.upload_media(img)
+            except Exception:  # noqa: BLE001
+                header_id = None
+        await wa.send_list(to, "¿Cuál es la correcta?", "Responder", rows, header_image_id=header_id)
 
 
 async def _handle_feedback(wa: WhatsAppClient, to: str, token: str) -> None:
@@ -245,58 +212,60 @@ def _interactive_id(message: dict) -> str | None:
 
 async def _handle_message(wa: WhatsAppClient, msg: dict) -> None:
     to = msg["from"]
+    cid = f"wa:{to}"
     mtype = msg.get("type")
 
     if mtype == "image":
         media_id = msg["image"]["id"]
-        _pending_photo[to] = media_id
         caption = (msg["image"].get("caption") or "").strip()
-        low = caption.lower()
-        if low.startswith(("registrar", "guardar")):
-            await wa.send_list(
-                to, "¿Qué tipo de foto es?", "Elegir tipo",
-                [("src:blister", "Blíster"), ("src:caja", "Caja"),
-                 ("src:receta", "Receta"), ("src:pastilla", "Pastilla")],
-            )
-        elif caption:
-            await _do_query(wa, to, media_id, caption)
-        else:
-            await wa.send_buttons(
-                to, "¿Qué quieres hacer con esta foto?",
-                [("act:reg", "📝 Registrar"), ("act:query", "🔍 Consultar")],
-            )
+        image = await wa.download_media(media_id)
+        reply = await agent.handle_message(cid, caption or None, image)
+        await _send_agent_reply(wa, to, reply, image)
         return
 
     if mtype == "interactive":
         data = _interactive_id(msg)
         if not data:
             return
-        if data == "act:reg":
-            await wa.send_list(
-                to, "¿Qué tipo de foto es?", "Elegir tipo",
-                [("src:blister", "Blíster"), ("src:caja", "Caja"),
-                 ("src:receta", "Receta"), ("src:pastilla", "Pastilla")],
-            )
-        elif data == "act:query":
-            mid = _pending_photo.get(to)
-            await (_do_query(wa, to, mid, None) if mid else wa.send_text(to, "Envíame primero una foto. 📷"))
-        elif data.startswith("src:"):
-            src = data.split(":", 1)[1]
-            mid = _pending_photo.get(to)
-            if src in _VALID_SOURCES and mid:
-                await _do_register(wa, to, mid, src)
-            else:
-                await wa.send_text(to, "Envíame primero una foto. 📷")
-        elif data.startswith("fb:"):
+        if data.startswith("fb:"):
             await _handle_feedback(wa, to, data.split(":", 1)[1])
+        elif data == "prof:new":
+            _awaiting_name.add(to)
+            await wa.send_text(to, "Escribe el *nombre* del nuevo perfil (p. ej. María).")
+        elif data.startswith("prof:"):
+            import uuid as _uuid
+
+            pid = data.split(":", 1)[1]
+            async with SessionLocal() as session:
+                try:
+                    prof = await profiles.get_profile(session, _uuid.UUID(pid))
+                except ValueError:
+                    prof = None
+            if prof:
+                agent.set_conversation_profile(cid, prof.id, prof.display_name)
+                await wa.send_text(to, f"👤 Perfil activo: *{prof.display_name}*.")
+            else:
+                await wa.send_text(to, "Ese perfil ya no existe.")
         return
 
     if mtype == "text":
-        body = (msg["text"].get("body") or "").strip().lower()
-        if body in ("hola", "/start", "start", "ayuda", "help", "/help"):
+        raw = (msg["text"].get("body") or "").strip()
+        body = raw.lower()
+        if to in _awaiting_name:
+            _awaiting_name.discard(to)
+            name = raw[:60] or "Perfil"
+            async with SessionLocal() as session:
+                prof = await profiles.create_profile(session, name)
+                await session.commit()
+            agent.set_conversation_profile(cid, prof.id, prof.display_name)
+            await wa.send_text(to, f"✅ Perfil *{name}* creado y activado.")
+        elif body in ("hola", "/start", "start", "ayuda", "help", "/help"):
             await wa.send_text(to, WELCOME)
-        else:
-            await wa.send_text(to, "Envíame una *foto* de un medicamento para empezar. 📷")
+        elif body in ("perfiles", "/perfiles", "perfil", "/perfil"):
+            await _send_profiles(wa, to)
+        elif raw:
+            reply = await agent.handle_message(cid, raw, None)
+            await _send_agent_reply(wa, to, reply)
 
 
 async def process_update(update: dict) -> None:

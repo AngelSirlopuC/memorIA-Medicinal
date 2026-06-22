@@ -18,8 +18,9 @@ import httpx
 
 from app.ai.client import AINotConfiguredError
 from app.config import get_settings
+from app import agent
 from app.db.session import SessionLocal
-from app.services import collage, pipeline, profiles
+from app.services import collage, pipeline, profiles  # noqa: F401 (pipeline usado por el agente)
 from app.storage import get_storage
 
 log = logging.getLogger("telegram")
@@ -30,6 +31,8 @@ _SOURCE_LABELS = {"receta": "Receta", "caja": "Caja", "blister": "Blíster", "pa
 # Estado en memoria (suficiente para un despliegue de un usuario/familia)
 _pending_photo: dict[int, str] = {}          # chat_id -> file_id de la última foto
 _pending_query: dict[int, dict] = {}         # chat_id -> {"query_id":.., "records":[..]}
+_active_profile: dict[int, str] = {}         # chat_id -> profile_id activo
+_awaiting_name: set[int] = set()             # chats que están creando un perfil
 
 
 # --- Cliente HTTP de Telegram -------------------------------------------------
@@ -135,86 +138,58 @@ def _conf_label(c: float | None) -> str:
 
 WELCOME = (
     "👋 *MemorIA Medicinal*\n\n"
-    "Tu memoria de medicamentos. Envíame una *foto* de una receta, caja, blíster o "
-    "pastilla y elige si quieres *registrarla* o *consultar* a cuál de tus medicamentos "
-    "se parece.\n\n"
+    "Tu memoria de medicamentos. Háblame con naturalidad y envíame *fotos*. Por ejemplo:\n"
+    "• _\"Hoy Thiago tuvo cita y le recetaron esto\"_ (adjunta la receta) y luego manda una "
+    "foto de cada medicina.\n"
+    "• _\"¿Cuándo compré esta pastilla?\"_ con una foto.\n\n"
     "_No identifico medicamentos ni indico si se pueden tomar. Verifica el vencimiento y "
-    "consulta con un profesional de salud._"
+    "consulta con un profesional de salud._\n\n"
+    "Usa /perfiles para registrar a varios miembros de la familia."
 )
 
 
 # --- Procesamiento ------------------------------------------------------------
 
 
-async def _resolve_profile_id(session) -> str:
-    prof = await profiles.get_or_create_default_profile(session)
-    await session.commit()
-    return prof.id
+def _profiles_keyboard(profs: list) -> dict:
+    rows = [[{"text": f"👤 {p.display_name}", "callback_data": f"prof:{p.id}"}] for p in profs]
+    rows.append([{"text": "➕ Nuevo perfil", "callback_data": "prof:new"}])
+    return {"inline_keyboard": rows}
 
 
-async def _do_register(tg: TelegramClient, chat_id: int, file_id: str, source: str) -> None:
-    image = await tg.download_file(file_id)
+async def _send_profiles(tg: TelegramClient, chat_id: int) -> None:
     async with SessionLocal() as session:
-        pid = await _resolve_profile_id(session)
-        try:
-            r = await pipeline.register_record(session, pid, image, source, "image/jpeg")
-        except AINotConfiguredError:
-            await tg.send_message(chat_id, "⚠️ La IA no está configurada (falta OPENAI_API_KEY).")
-            return
-    if r.deduplicated:
-        await tg.send_message(chat_id, "Esta foto ya estaba registrada en tu memoria. ✓")
+        profs = await profiles.list_profiles(session)
+    active_id = agent.get_conversation_profile(f"tg:{chat_id}")[0]
+    if profs:
+        active = next((p.display_name for p in profs if str(p.id) == str(active_id)), "por defecto")
+        text = f"👪 Perfil activo: *{active}*.\n\nElige uno o crea otro:"
     else:
-        name = f"*{r.name}*" + (f" {r.dose}" if r.dose else "") if r.name else "el medicamento"
-        await tg.send_message(chat_id, f"✅ Registré {name} como _{_SOURCE_LABELS.get(source, source)}_.")
-    _pending_photo.pop(chat_id, None)
+        text = "Aún no hay perfiles. Crea el primero:"
+    await tg.send_message(chat_id, text, _profiles_keyboard(profs))
 
 
-async def _do_query(tg: TelegramClient, chat_id: int, file_id: str, question: str | None) -> None:
-    image = await tg.download_file(file_id)
-    async with SessionLocal() as session:
-        pid = await _resolve_profile_id(session)
-        try:
-            r = await pipeline.query_medicine(session, pid, image, question, "image/jpeg")
-        except AINotConfiguredError:
-            await tg.send_message(chat_id, "⚠️ La IA no está configurada (falta OPENAI_API_KEY).")
-            return
-
-    if not r.candidates:
-        await tg.send_message(
-            chat_id,
-            "No encontré coincidencias en tu historial todavía. Regístralo para reconocerlo después.",
-        )
-        _pending_photo.pop(chat_id, None)
-        return
-
-    lines = ["🔎 *Posibles coincidencias:*", ""]
-    for i, c in enumerate(r.candidates, start=1):
-        name = c.name or f"Registro #{c.rank}"
-        date = c.registered_at.strftime("%d/%m/%Y") if c.registered_at else "fecha desconocida"
-        conf = _conf_label(c.vision_confidence if c.vision_confidence is not None else c.vector_score)
-        lines.append(f"*{i}.* {name} — registrado {date}" + (f" · {conf}" if conf else ""))
-    lines.append("")
-    lines.append("_Posible coincidencia. Verifica el vencimiento y consulta con un profesional._")
-    caption = "\n".join(lines)
-
-    _pending_query[chat_id] = {
-        "query_id": r.query_id,
-        "records": [c.record_id for c in r.candidates],
-    }
-    keyboard = _feedback_keyboard(len(r.candidates))
-
-    # Collage: una sola imagen con las opciones numeradas + la foto de consulta
-    sent = False
-    if len(r.candidates) > 1:
-        try:
-            img = collage.collage_for_candidates(get_storage(), image, r.candidates)
-            await tg.send_photo(chat_id, img, caption, keyboard)
-            sent = True
-        except Exception:  # noqa: BLE001 — si falla el collage, caemos a texto
-            sent = False
-    if not sent:
-        await tg.send_message(chat_id, caption, keyboard)
-    _pending_photo.pop(chat_id, None)
+async def _send_agent_reply(tg: TelegramClient, chat_id: int, reply, query_image: bytes | None = None) -> None:
+    """Envía las respuestas del agente; si hubo consulta, manda collage + feedback."""
+    for t in reply.texts:
+        await tg.send_message(chat_id, t)
+    q = reply.query
+    if q and q.candidates:
+        _pending_query[chat_id] = {
+            "query_id": q.query_id,
+            "records": [c.record_id for c in q.candidates],
+        }
+        keyboard = _feedback_keyboard(len(q.candidates))
+        sent = False
+        if len(q.candidates) > 1 and query_image:
+            try:
+                img = collage.collage_for_candidates(get_storage(), query_image, q.candidates)
+                await tg.send_photo(chat_id, img, "Elige la opción correcta:", keyboard)
+                sent = True
+            except Exception:  # noqa: BLE001
+                sent = False
+        if not sent:
+            await tg.send_message(chat_id, "Elige la opción correcta:", keyboard)
 
 
 async def _handle_feedback(tg: TelegramClient, chat_id: int, token: str) -> None:
@@ -235,55 +210,65 @@ async def _handle_feedback(tg: TelegramClient, chat_id: int, token: str) -> None
 
 
 async def process_update(update: dict) -> None:
-    """Procesa un update de Telegram (webhook o polling)."""
+    """Procesa un update de Telegram (webhook o polling). El agente maneja la conversación."""
     tg = get_client()
     try:
         if "message" in update:
             msg = update["message"]
             chat_id = msg["chat"]["id"]
+            cid = f"tg:{chat_id}"
 
             if "photo" in msg:
                 file_id = msg["photo"][-1]["file_id"]  # mayor resolución
-                _pending_photo[chat_id] = file_id
                 caption = (msg.get("caption") or "").strip()
-                low = caption.lower()
-                if low.startswith(("registrar", "guardar", "/registrar")):
-                    await tg.send_message(chat_id, "¿Qué tipo de foto es?", _source_keyboard())
-                elif caption:
-                    await _do_query(tg, chat_id, file_id, caption)
-                else:
-                    await tg.send_message(chat_id, "¿Qué quieres hacer con esta foto?", _action_keyboard())
+                image = await tg.download_file(file_id)
+                reply = await agent.handle_message(cid, caption or None, image)
+                await _send_agent_reply(tg, chat_id, reply, image)
                 return
 
             text = (msg.get("text") or "").strip()
-            if text in ("/start", "/help", "start", "help"):
+            if chat_id in _awaiting_name:
+                _awaiting_name.discard(chat_id)
+                name = text[:60] or "Perfil"
+                async with SessionLocal() as session:
+                    prof = await profiles.create_profile(session, name)
+                    await session.commit()
+                agent.set_conversation_profile(cid, prof.id, prof.display_name)
+                await tg.send_message(chat_id, f"✅ Perfil *{name}* creado y activado.")
+            elif text in ("/start", "/help", "start", "help"):
                 await tg.send_message(chat_id, WELCOME)
-            else:
-                await tg.send_message(chat_id, "Envíame una *foto* de un medicamento para empezar. 📷")
+            elif text in ("/perfiles", "/perfil", "perfiles"):
+                await _send_profiles(tg, chat_id)
+            elif text:
+                reply = await agent.handle_message(cid, text, None)
+                await _send_agent_reply(tg, chat_id, reply)
             return
 
         if "callback_query" in update:
             cq = update["callback_query"]
             chat_id = cq["message"]["chat"]["id"]
+            cid = f"tg:{chat_id}"
             data = cq.get("data", "")
             await tg.answer_callback(cq["id"])
 
-            if data == "act:reg":
-                await tg.send_message(chat_id, "¿Qué tipo de foto es?", _source_keyboard())
-            elif data == "act:query":
-                fid = _pending_photo.get(chat_id)
-                if fid:
-                    await _do_query(tg, chat_id, fid, None)
-                else:
-                    await tg.send_message(chat_id, "Envíame primero una foto. 📷")
-            elif data.startswith("src:"):
-                src = data.split(":", 1)[1]
-                fid = _pending_photo.get(chat_id)
-                if src in _VALID_SOURCES and fid:
-                    await _do_register(tg, chat_id, fid, src)
-                else:
-                    await tg.send_message(chat_id, "Envíame primero una foto. 📷")
-            elif data.startswith("fb:"):
+            if data.startswith("fb:"):
                 await _handle_feedback(tg, chat_id, data.split(":", 1)[1])
+            elif data == "prof:new":
+                _awaiting_name.add(chat_id)
+                await tg.send_message(chat_id, "Escribe el *nombre* del nuevo perfil (p. ej. _María_).")
+            elif data.startswith("prof:"):
+                import uuid as _uuid
+
+                pid = data.split(":", 1)[1]
+                async with SessionLocal() as session:
+                    try:
+                        prof = await profiles.get_profile(session, _uuid.UUID(pid))
+                    except ValueError:
+                        prof = None
+                if prof:
+                    agent.set_conversation_profile(cid, prof.id, prof.display_name)
+                    await tg.send_message(chat_id, f"👤 Perfil activo: *{prof.display_name}*.")
+                else:
+                    await tg.send_message(chat_id, "Ese perfil ya no existe.")
     except Exception:  # noqa: BLE001 — un error no debe tumbar el webhook
         log.exception("Error procesando update de Telegram")

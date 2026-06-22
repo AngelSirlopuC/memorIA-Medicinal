@@ -68,6 +68,7 @@ async def register_record(
     source_type: str,
     mime: str = "image/jpeg",
     notes: str | None = None,
+    prescription_id: uuid.UUID | None = None,
 ) -> RegisterResponse:
     storage = get_storage()
     sha = storage.sha256(image)
@@ -102,6 +103,7 @@ async def register_record(
 
     record = Record(
         profile_id=profile_id,
+        prescription_id=prescription_id,
         medicine_id=medicine.id if medicine else None,
         source_type=source_type,
         visible_text=ext.visible_text,

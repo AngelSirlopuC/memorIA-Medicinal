@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app import __version__
+from app.api.agent_router import router as agent_router
 from app.api.router import router as api_router
 from app.api.telegram_router import router as telegram_router
 from app.api.whatsapp_router import router as whatsapp_router
@@ -39,6 +40,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+app.include_router(agent_router)
 app.include_router(telegram_router)
 app.include_router(whatsapp_router)
 

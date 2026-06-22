@@ -29,6 +29,27 @@ class ProfileOut(BaseModel):
     created_at: datetime
 
 
+class PrescriptionOut(BaseModel):
+    id: uuid.UUID
+    profile_id: uuid.UUID
+    doctor: str | None = None
+    notes: str | None = None
+    image_url: str | None = None
+    closed: bool = False
+    medicines_count: int = 0
+    created_at: datetime
+
+
+class RecordOut(BaseModel):
+    record_id: uuid.UUID
+    name: str | None = None
+    dose: str | None = None
+    source_type: str
+    image_url: str | None = None
+    notes: str | None = None
+    registered_at: datetime
+
+
 # --- Registro -----------------------------------------------------------------
 
 
@@ -68,6 +89,13 @@ class QueryResponse(BaseModel):
     confidence: float = 0.0
     candidates: list[QueryCandidate] = Field(default_factory=list)
     disclaimer: str = DISCLAIMER
+
+
+class AgentMessageResponse(BaseModel):
+    replies: list[str] = Field(default_factory=list)
+    query: QueryResponse | None = None
+    profile_name: str | None = None
+    prescription_open: bool = False
 
 
 class FeedbackRequest(BaseModel):

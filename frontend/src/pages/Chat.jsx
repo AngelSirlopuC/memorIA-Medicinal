@@ -1,25 +1,37 @@
 import { useEffect, useRef, useState } from "react";
-import { queryMedicine, registerRecord, sendFeedback } from "../api.js";
+import { sendAgentMessage, sendFeedback } from "../api.js";
 import CandidateCard from "../components/CandidateCard.jsx";
+import { useProfiles } from "../ProfileContext.jsx";
 
 let _id = 0;
 const nextId = () => `m${++_id}`;
+const CONV_KEY = "memoria.convId";
 
-const SOURCES = [
-  { value: "blister", label: "Blíster" },
-  { value: "caja", label: "Caja" },
-  { value: "receta", label: "Receta" },
-  { value: "pastilla", label: "Pastilla" },
-];
+function convId() {
+  let id = localStorage.getItem(CONV_KEY);
+  if (!id) {
+    id = "web:" + (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36));
+    localStorage.setItem(CONV_KEY, id);
+  }
+  return id;
+}
+
+// Renderiza *negritas* simples del texto del agente.
+function rich(text) {
+  const parts = String(text).split(/(\*[^*]+\*)/g);
+  return parts.map((p, i) =>
+    p.startsWith("*") && p.endsWith("*") ? <strong key={i}>{p.slice(1, -1)}</strong> : p
+  );
+}
 
 export default function Chat() {
+  const { activeId } = useProfiles();
   const [messages, setMessages] = useState([]);
-  const [mode, setMode] = useState("consultar"); // consultar | registrar
-  const [sourceType, setSourceType] = useState("blister");
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [prescriptionOpen, setPrescriptionOpen] = useState(false);
 
   const galleryRef = useRef(null);
   const cameraRef = useRef(null);
@@ -29,9 +41,7 @@ export default function Chat() {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, busy]);
 
-  function push(msg) {
-    setMessages((m) => [...m, { id: nextId(), ...msg }]);
-  }
+  const push = (msg) => setMessages((m) => [...m, { id: nextId(), ...msg }]);
 
   function onPick(e) {
     const f = e.target.files?.[0];
@@ -50,72 +60,40 @@ export default function Chat() {
   async function handleFeedback(queryId, recordId, msgId) {
     try {
       await sendFeedback(queryId, recordId);
-      setMessages((ms) =>
-        ms.map((m) => (m.id === msgId ? { ...m, selectedId: recordId } : m))
-      );
+      setMessages((ms) => ms.map((m) => (m.id === msgId ? { ...m, selectedId: recordId } : m)));
     } catch (err) {
-      push({ role: "info", kind: "info", text: `No se pudo guardar tu elección: ${err.message}` });
+      push({ kind: "info", text: `No se pudo guardar tu elección: ${err.message}` });
     }
   }
 
   async function onSend() {
     if (busy) return;
-    if (!file) {
-      push({
-        role: "info",
-        kind: "info",
-        text:
-          mode === "consultar"
-            ? "Adjunta una foto del medicamento para buscar en tu historial."
-            : "Adjunta una foto para registrar el medicamento.",
-      });
-      return;
-    }
-
-    const userPreview = preview;
     const question = text.trim();
-    push({ role: "user", kind: "image", text: question, imageUrl: userPreview });
+    if (!question && !file) return;
 
+    push({ kind: "user", text: question, imageUrl: preview });
     const sentFile = file;
-    const sentMode = mode;
-    const sentSource = sourceType;
     setText("");
     setFile(null);
     setPreview(null);
     setBusy(true);
 
     try {
-      if (sentMode === "registrar") {
-        const r = await registerRecord(sentFile, sentSource);
+      const r = await sendAgentMessage(convId(), question, sentFile, { profileId: activeId });
+      setPrescriptionOpen(!!r.prescription_open);
+      (r.replies || []).forEach((t) => push({ kind: "bot", text: t }));
+      if (r.query && r.query.candidates && r.query.candidates.length) {
         push({
-          role: "bot",
-          kind: "text",
-          text: r.deduplicated
-            ? "Esta foto ya estaba registrada en tu memoria."
-            : `Registrado ✓ ${r.name ? `· ${r.name}${r.dose ? " " + r.dose : ""}` : ""}`.trim(),
+          kind: "candidates",
+          queryId: r.query.query_id,
+          bestId: r.query.best_record_id,
+          candidates: r.query.candidates,
+          disclaimer: r.query.disclaimer,
+          selectedId: null,
         });
-      } else {
-        const r = await queryMedicine(sentFile, question);
-        if (!r.candidates || r.candidates.length === 0) {
-          push({
-            role: "bot",
-            kind: "text",
-            text: "No encontré coincidencias en tu historial todavía. Registra el medicamento para reconocerlo después.",
-          });
-        } else {
-          push({
-            role: "bot",
-            kind: "candidates",
-            queryId: r.query_id,
-            bestId: r.best_record_id,
-            candidates: r.candidates,
-            selectedId: null,
-            disclaimer: r.disclaimer,
-          });
-        }
       }
     } catch (err) {
-      push({ role: "bot", kind: "text", text: `Ocurrió un error: ${err.message}` });
+      push({ kind: "bot", text: `Ocurrió un error: ${err.message}` });
     } finally {
       setBusy(false);
     }
@@ -133,10 +111,11 @@ export default function Chat() {
       <div className="messages">
         {messages.length === 0 && (
           <div className="empty-state">
-            <div className="big">💊</div>
+            <div className="big">💬</div>
             <p>
-              Envía una foto de un medicamento y pregunta lo que necesites, o cambia a{" "}
-              <strong>Registrar</strong> para guardarlo en tu memoria.
+              Cuéntame en lenguaje natural. Por ejemplo: <em>"Hoy Thiago tuvo cita y le
+              recetaron esto"</em> y adjunta la foto de la receta; luego envía una foto de
+              cada medicina. O pregunta <em>"¿cuándo compré esta pastilla?"</em> con una foto.
             </p>
           </div>
         )}
@@ -152,7 +131,6 @@ export default function Chat() {
           if (m.kind === "candidates") {
             return (
               <div key={m.id} className="bubble bot">
-                Encontré {m.candidates.length === 1 ? "una posible coincidencia" : "estas posibles coincidencias"}:
                 <div className="candidates">
                   {m.candidates.map((c) => (
                     <CandidateCard
@@ -171,13 +149,13 @@ export default function Chat() {
                     </button>
                   </div>
                 )}
-                <div className="disclaimer">{m.disclaimer}</div>
+                {m.disclaimer && <div className="disclaimer">{m.disclaimer}</div>}
               </div>
             );
           }
           return (
-            <div key={m.id} className={`bubble ${m.role === "user" ? "user" : "bot"}`}>
-              {m.text}
+            <div key={m.id} className={`bubble ${m.kind === "user" ? "user" : "bot"}`}>
+              {rich(m.text)}
               {m.imageUrl && <img className="thumb" src={m.imageUrl} alt="" />}
             </div>
           );
@@ -196,37 +174,11 @@ export default function Chat() {
       </div>
 
       <div className="composer">
-        <div className="mode-row">
-          <div className="toggle">
-            <button
-              className={mode === "consultar" ? "active" : ""}
-              onClick={() => setMode("consultar")}
-            >
-              Consultar
-            </button>
-            <button
-              className={mode === "registrar" ? "active" : ""}
-              onClick={() => setMode("registrar")}
-            >
-              Registrar
-            </button>
+        {prescriptionOpen && (
+          <div className="attach-preview" style={{ background: "#e7f6ee", color: "#15a36e" }}>
+            📋 Receta abierta · envía las fotos de cada medicina o escribe "listo"
           </div>
-          {mode === "registrar" && (
-            <select
-              className="select"
-              value={sourceType}
-              onChange={(e) => setSourceType(e.target.value)}
-              aria-label="Tipo de foto"
-            >
-              {SOURCES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-
+        )}
         {preview && (
           <div className="attach-preview">
             <img src={preview} alt="" />
@@ -238,13 +190,7 @@ export default function Chat() {
         )}
 
         <div className="input-row">
-          <input
-            ref={galleryRef}
-            type="file"
-            accept="image/*"
-            hidden
-            onChange={onPick}
-          />
+          <input ref={galleryRef} type="file" accept="image/*" hidden onChange={onPick} />
           <input
             ref={cameraRef}
             type="file"
@@ -253,11 +199,7 @@ export default function Chat() {
             hidden
             onChange={onPick}
           />
-          <button
-            className="icon-btn"
-            title="Subir foto"
-            onClick={() => galleryRef.current?.click()}
-          >
+          <button className="icon-btn" title="Subir foto" onClick={() => galleryRef.current?.click()}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
               <path
                 d="M4 16l4-4 4 4 3-3 5 5M4 8h.01M3 6a2 2 0 012-2h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6z"
@@ -268,11 +210,7 @@ export default function Chat() {
               />
             </svg>
           </button>
-          <button
-            className="icon-btn"
-            title="Tomar foto"
-            onClick={() => cameraRef.current?.click()}
-          >
+          <button className="icon-btn" title="Tomar foto" onClick={() => cameraRef.current?.click()}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
               <path
                 d="M3 8a2 2 0 012-2h2l1.2-1.6A1 1 0 019 4h6a1 1 0 01.8.4L17 6h2a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"
@@ -285,11 +223,7 @@ export default function Chat() {
           </button>
           <textarea
             rows={1}
-            placeholder={
-              mode === "consultar"
-                ? "¿Cuándo compré esta pastilla? (adjunta la foto)"
-                : "Nota opcional sobre el medicamento…"
-            }
+            placeholder="Escribe un mensaje o adjunta una foto…"
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}

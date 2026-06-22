@@ -14,6 +14,7 @@ from app.schemas import (
     ProfileCreate,
     ProfileOut,
     QueryResponse,
+    RecordOut,
     RegisterResponse,
 )
 from app.services import pipeline, profiles
@@ -62,6 +63,18 @@ async def post_profile(
     prof = await profiles.create_profile(session, body.display_name, body.relation)
     await session.commit()
     return prof
+
+
+@router.get("/profiles/{profile_id}/records", response_model=list[RecordOut])
+async def get_profile_records(
+    profile_id: uuid.UUID,
+    limit: int = 50,
+    offset: int = 0,
+    session: AsyncSession = Depends(get_session),
+):
+    if await profiles.get_profile(session, profile_id) is None:
+        raise HTTPException(status_code=404, detail="Perfil no encontrado.")
+    return await profiles.list_records(session, profile_id, min(limit, 200), offset)
 
 
 # --- Registro -----------------------------------------------------------------

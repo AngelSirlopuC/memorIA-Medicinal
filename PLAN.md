@@ -455,6 +455,23 @@ que permita hacer el mismo trabajo (preguntar, capturar o enviar fotos) desde el
 - flujo natural: "Hoy Thiago tuvo cita, le recetaron esto" → abre receta → se suman fotos
 - integrado en web (chat conversacional), Telegram y WhatsApp
 - endpoint `POST /agent/message`
+- **OCR de la receta**: al abrir una receta con foto, extrae la lista de lo recetado
+  (nombre, dosis, indicación) y la guarda (`prescriptions.items`)
+- **consulta por texto**: herramienta `get_last_prescription` para preguntar "¿qué le
+  recetaron a X en la última receta?" sin necesidad de foto
+- **memoria de conversación**: el agente recuerda los turnos recientes y las medicinas
+  registradas en el hilo, para resolver referencias ("este vence 08/2026")
+- **`update_medicine`**: asocia vencimiento, lote o notas a una medicina ya registrada
+- **contexto liviano + tema en foco**: en vez de acumular charla, fija el sujeto concreto
+  (medicina / receta / persona) y segmenta la búsqueda por ese perfil
+- **OCR del paciente → perfil**: si la receta va dirigida a "Miguel", se registra en su
+  perfil automáticamente
+- **cierre de conversación**: tras completar o consultar, confirma si seguir o cerrar;
+  `end_conversation` limpia el tema (mantiene la persona)
+- **búsqueda con filtros**: `find_prescription` y `find_medicine` localizan una receta o
+  medicina específica por nombre y/o fecha (año/mes/día) y la fijan en foco
+- **selección por lista**: si la búsqueda devuelve varias, el agente las numera y
+  `choose_option` permite elegir por número ("el 2", "la segunda")
 
 ## Sprint 11 - Speech-to-Text (planeado)
 

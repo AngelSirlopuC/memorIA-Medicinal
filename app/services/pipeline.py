@@ -299,6 +299,72 @@ async def build_query_collage(session: AsyncSession, query_id: uuid.UUID) -> byt
     return collage_svc.collage_for_candidates(storage, query_bytes, cands)
 
 
+# --- Actualización de un registro ---------------------------------------------
+
+
+async def update_record(
+    session: AsyncSession,
+    record_id: uuid.UUID,
+    expiry: str | None = None,
+    lot_number: str | None = None,
+    note: str | None = None,
+) -> bool:
+    """Actualiza vencimiento, lote o agrega una nota a una medicina ya registrada."""
+    rec = await session.get(Record, record_id)
+    if rec is None:
+        return False
+    if expiry is not None:
+        rec.expiry = expiry
+    if lot_number is not None:
+        rec.lot_number = lot_number
+    if note:
+        rec.notes = (f"{rec.notes} | {note}" if rec.notes else note)
+    await session.commit()
+    return True
+
+
+async def get_record(session: AsyncSession, record_id: uuid.UUID) -> tuple:
+    """Devuelve (Record, Medicine|None) por id, o (None, None)."""
+    rec = await session.get(Record, record_id)
+    if rec is None:
+        return None, None
+    med = await session.get(Medicine, rec.medicine_id) if rec.medicine_id else None
+    return rec, med
+
+
+async def search_records(
+    session: AsyncSession,
+    profile_id: uuid.UUID | None = None,
+    name: str | None = None,
+    year: int | None = None,
+    month: int | None = None,
+    day: int | None = None,
+    limit: int = 20,
+) -> list[tuple]:
+    """Busca medicinas registradas por persona, nombre y/o fecha. Devuelve [(Record, Medicine)]."""
+    stmt = select(Record, Medicine).outerjoin(Medicine, Medicine.id == Record.medicine_id)
+    if profile_id:
+        stmt = stmt.where(Record.profile_id == profile_id)
+    if name:
+        stmt = stmt.where(Medicine.name_normalized.like(f"%{name.strip().lower()}%"))
+    stmt = stmt.order_by(Record.registered_at.desc()).limit(100)
+    rows = (await session.execute(stmt)).all()
+
+    out: list[tuple] = []
+    for rec, med in rows:
+        d = rec.registered_at
+        if year and d.year != year:
+            continue
+        if month and d.month != month:
+            continue
+        if day and d.day != day:
+            continue
+        out.append((rec, med))
+        if len(out) >= limit:
+            break
+    return out
+
+
 # --- Feedback -----------------------------------------------------------------
 
 

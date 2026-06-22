@@ -46,6 +46,18 @@ class MedicineExtraction(BaseModel):
         return " | ".join(p for p in parts if p)
 
 
+class PrescribedItem(BaseModel):
+    name: str | None = Field(None, description="nombre del medicamento recetado")
+    dose: str | None = Field(None, description="dosis, p.ej. '500mg'")
+    instructions: str | None = Field(None, description="indicación, p.ej. 'cada 8h por 7 días'")
+
+
+class PrescriptionExtraction(BaseModel):
+    patient: str | None = Field(None, description="nombre del paciente a quien va dirigida la receta")
+    doctor: str | None = Field(None, description="médico, si es legible")
+    items: list[PrescribedItem] = Field(default_factory=list)
+
+
 class RerankCandidate(BaseModel):
     rank: int
     record_id: str
@@ -68,6 +80,15 @@ _EXTRACT_SYSTEM = (
     "name, dose, lab, presentation, form, color, visible_text, description. "
     "Usa null cuando un dato no sea visible. En 'description' detalla empaque, patrón del "
     "blíster, distribución y cantidad de cavidades/pastillas, y colores."
+)
+
+_PRESCRIPTION_SYSTEM = (
+    "Eres un asistente que lee recetas médicas. Extrae la LISTA de medicamentos recetados "
+    "tal como aparecen en el papel. NO inventes: si la receta no es legible o no es una "
+    "receta, devuelve items vacío. NO indiques si se pueden tomar. Extrae también el nombre "
+    "del PACIENTE a quien va dirigida la receta, si es legible. Responde SOLO con un objeto "
+    "JSON: {\"patient\": str|null, \"doctor\": str|null, \"items\": [{\"name\": str|null, "
+    "\"dose\": str|null, \"instructions\": str|null}]}."
 )
 
 _RERANK_SYSTEM = (
@@ -106,6 +127,28 @@ async def extract_medicine_info(image: bytes, mime: str = "image/jpeg") -> Medic
     )
     data = json.loads(resp.choices[0].message.content or "{}")
     return MedicineExtraction.model_validate(data)
+
+
+async def extract_prescription(image: bytes, mime: str = "image/jpeg") -> PrescriptionExtraction:
+    """Extrae la lista de medicamentos recetados de una foto de receta. 1 llamada a Vision."""
+    settings = get_settings()
+    client = get_client()
+    resp = await client.chat.completions.create(
+        model=settings.vision_model,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": _PRESCRIPTION_SYSTEM},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extrae los medicamentos recetados de esta receta."},
+                    {"type": "image_url", "image_url": {"url": image_to_data_url(image, mime)}},
+                ],
+            },
+        ],
+    )
+    data = json.loads(resp.choices[0].message.content or "{}")
+    return PrescriptionExtraction.model_validate(data)
 
 
 async def compare_candidates(

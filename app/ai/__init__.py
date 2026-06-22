@@ -9,9 +9,11 @@ Tres capacidades, todas vía la API de OpenAI (sin modelos locales):
 from app.ai.embeddings import embed_text
 from app.ai.vision import (
     MedicineExtraction,
+    PrescriptionExtraction,
     RerankResult,
     compare_candidates,
     extract_medicine_info,
+    extract_prescription,
 )
 
 MODEL_VERSION = "gpt-5-mini+te3small@1"
@@ -19,8 +21,10 @@ MODEL_VERSION = "gpt-5-mini+te3small@1"
 __all__ = [
     "embed_text",
     "extract_medicine_info",
+    "extract_prescription",
     "compare_candidates",
     "MedicineExtraction",
+    "PrescriptionExtraction",
     "RerankResult",
     "MODEL_VERSION",
 ]
